@@ -1,0 +1,79 @@
+# Managed by dan-gillis-ai/platform-gitops — DO NOT EDIT IN PLACE.
+#
+# Copied from platform-gitops-workflows by the reconciler. Drift is corrected
+# on the nightly reconcile, and a change here will be reverted.
+# Fix the pipeline in the library, then reconcile.
+name: CI
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  detect:
+    name: Detect languages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.detect.outputs.go }}
+      python: ${{ steps.detect.outputs.python }}
+    steps:
+    - uses: actions/checkout@v4
+    - id: detect
+      run: 'set -euo pipefail
+
+        # Presence of go.mod at the root is the signal, not a config flag:
+
+        # a stale flag would let CI skip a suite that exists.
+
+        if [ -f go.mod ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false"
+        >> "$GITHUB_OUTPUT"; fi
+
+        if [ -f pyproject.toml ] || [ -d src ]; then echo "python=true" >> "$GITHUB_OUTPUT";
+        else echo "python=false" >> "$GITHUB_OUTPUT"; fi
+
+        '
+  go:
+    name: Go
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27'
+        cache: 'on'
+    - name: Vet
+      run: go vet ./...
+    - name: Test
+      run: go test ./... -race -timeout 15m
+  python:
+    name: Python
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install
+      run: 'set -euo pipefail
+
+        python -m pip install --upgrade pip
+
+        pip install -e ''.[dev]''
+
+        '
+    - name: Test
+      run: pytest -q --timeout=300

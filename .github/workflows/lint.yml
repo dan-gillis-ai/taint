@@ -1,0 +1,235 @@
+# Managed by dan-gillis-ai/platform-gitops — DO NOT EDIT IN PLACE.
+#
+# Copied from platform-gitops-workflows by the reconciler. Drift is corrected
+# on the nightly reconcile, and a change here will be reverted.
+# Fix the pipeline in the library, then reconcile.
+name: Lint
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  detect:
+    name: Detect languages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.detect.outputs.go }}
+      python: ${{ steps.detect.outputs.python }}
+      swift: ${{ steps.detect.outputs.swift }}
+    steps:
+    - uses: actions/checkout@v4
+    - id: detect
+      env:
+        REQUESTED: auto
+      run: "set -euo pipefail\nrequested=\"${REQUESTED:-auto}\"\n# NOT named `select`:\
+        \ that is a bash reserved word, so `select() { \u2026 }`\n# is a syntax error\
+        \ at parse time and the whole step dies.\nwant_lang() {\n  # An explicit list\
+        \ is an override: the caller has told us what\n  # exists, so we do not second-guess\
+        \ it with file sniffing.\n  if [ \"$requested\" != \"auto\" ]; then\n    case\
+        \ \",$requested,\" in *\",$1,\"*) echo true ;; *) echo false ;; esac\n   \
+        \ return\n  fi\n  case \"$1\" in\n    go)     [ -f go.mod ] && echo true ||\
+        \ echo false ;;\n    python) { [ -f pyproject.toml ] || [ -f setup.py ] ||\
+        \ [ -f setup.cfg ] || [ -d src ]; } && echo true || echo false ;;\n    swift)\
+        \  { ls ./*.xcodeproj ./*.xcworkspace >/dev/null 2>&1 || [ -d Sources ] ||\
+        \ ls ./**/*.swift >/dev/null 2>&1; } && echo true || echo false ;;\n  esac\n\
+        }\nfor lang in go python swift; do\n  state=\"$(want_lang \"$lang\")\"\n \
+        \ echo \"$lang=$state\" >> \"$GITHUB_OUTPUT\"\n  echo \"detect: $lang=$state\"\
+        \ndone\n"
+  go:
+    name: Lint (Go)
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      unconfigured: ${{ steps.row.outputs.unconfigured }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27'
+        cache: 'on'
+    - name: gofmt (must produce NO output)
+      run: "set -euo pipefail\ncommand -v gofmt >/dev/null 2>&1 || { echo \"::error::gofmt\
+        \ is not on PATH \u2014 cannot verify formatting\"; exit 1; }\noffenders=\"\
+        $(gofmt -l . | grep -vE '^(vendor|testdata)/' || true)\"\nif [ -n \"$offenders\"\
+        \ ]; then\n  echo \"::error::The following files are not gofmt-clean. Run:\
+        \ gofmt -w .\"\n  printf '%s\\n' \"$offenders\"\n  exit 1\nfi\necho \"gofmt:\
+        \ clean\"\n"
+    - name: go vet
+      run: go vet ./...
+    - name: Detect golangci-lint configuration
+      id: golangci
+      run: "set -euo pipefail\nif [ -f .golangci.yml ] || [ -f .golangci.yaml ] ||\
+        \ [ -f .golangci.toml ] || [ -f .golangci.json ]; then\n  echo \"configured=true\"\
+        \ >> \"$GITHUB_OUTPUT\"\n  echo \"golangci-lint: config found, it IS part\
+        \ of this gate\"\nelse\n  echo \"configured=false\" >> \"$GITHUB_OUTPUT\"\n\
+        \  if [ \"false\" = \"true\" ]; then\n    echo\
+        \ \"::error::require-golangci-lint is true but no .golangci.yml/.golangci.yaml/.golangci.toml/.golangci.json\
+        \ exists in the calling repo\"\n    exit 1\n  fi\n  # Loud, annotated, and\
+        \ named in the summary. Not a pass.\n  echo \"::warning title=golangci-lint\
+        \ NOT RUN::No .golangci.{yml,yaml,toml,json} in this repository, so golangci-lint\
+        \ did not run. This check did NOT pass on golangci-lint's account.\"\nfi\n"
+    - name: golangci-lint
+      if: steps.golangci.outputs.configured == 'true'
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.5.0
+        args: --timeout=10m
+    - id: row
+      env:
+        REPORT_STATE: ${{ steps.golangci.outputs.configured }}
+      run: "set -euo pipefail\nif [ \"$REPORT_STATE\" = \"true\" ]; then\n  echo 'row=||\
+        \ Tool | State ||| `gofmt -l` | ran, clean |' >> \"$GITHUB_OUTPUT\"\n  echo\
+        \ 'row2=|| Tool | State ||| `go vet` | ran, clean |' >> \"$GITHUB_OUTPUT\"\
+        \n  echo 'row3=|| Tool | State ||| `golangci-lint` | ran, clean |' >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"unconfigured=\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo 'row=|| Tool\
+        \ | State ||| `gofmt -l` | ran, clean |' >> \"$GITHUB_OUTPUT\"\n  echo 'row2=||\
+        \ Tool | State ||| `go vet` | ran, clean |' >> \"$GITHUB_OUTPUT\"\n  echo\
+        \ 'row3=|| Tool | State ||| `golangci-lint` | **DID NOT RUN** \u2014 unconfigured\
+        \ |' >> \"$GITHUB_OUTPUT\"\n  echo \"unconfigured=golangci-lint\" >> \"$GITHUB_OUTPUT\"\
+        \nfi\n"
+  python:
+    name: Lint (Python)
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      unconfigured: ${{ steps.row.outputs.unconfigured }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+    - name: Install project (dev extras)
+      run: "set -euo pipefail\npython -m pip install --upgrade pip\nif grep -qE '^\\\
+        s*(dev|test|lint)?\\s*=?\\s*\\[' pyproject.toml 2>/dev/null || grep -q 'optional-dependencies'\
+        \ pyproject.toml 2>/dev/null; then\n  pip install -e '.[dev]'\nelif [ -f requirements-dev.txt\
+        \ ]; then\n  pip install -r requirements-dev.txt\nelse\n  echo \"::notice::No\
+        \ dev extras found; falling back to the pinned linter versions in this workflow\"\
+        \n  pip install 'ruff==0.14.4' 'mypy==1.18.2'\nfi\n"
+    - name: Verify the linters are actually present
+      run: "set -euo pipefail\nmissing=0\nfor tool in ruff mypy; do\n  if python -c\
+        \ \"import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$tool')\
+        \ else 1)\" 2>/dev/null; then\n    echo \"::debug::$tool importable\"\n  elif\
+        \ command -v \"$tool\" >/dev/null 2>&1; then\n    echo \"::debug::$tool on\
+        \ PATH\"\n  else\n    echo \"::error::$tool is not available after install.\
+        \ A lint tool that cannot run must not read as a pass.\"\n    missing=1\n\
+        \  fi\ndone\nexit \"$missing\"\n"
+    - name: ruff check
+      run: ruff check .
+    - name: ruff format --check
+      run: ruff format --check .
+    - name: mypy --strict
+      env:
+        MYPY_PATHS: ''
+      run: "set -euo pipefail\n# --strict is not a default that can be opted into\
+        \ per-line. It is\n# the org standard: untyped code is invisible to a type\
+        \ checker,\n# so a partially typed package is the false-confidence case.\n\
+        targets=\"${MYPY_PATHS:-}\"\nif [ -z \"$targets\" ]; then\n  if [ -d src ];\
+        \ then targets=\"src\"; else targets=\".\"; fi\nfi\necho \"mypy targets: $targets\"\
+        \nmypy --strict \\\n  --exclude '(\\.venv|venv|build|dist|\\.git|node_modules)/'\
+        \ \\\n  $targets\n"
+    - id: row
+      run: "set -euo pipefail\n{\n  echo 'row=|| Tool | State ||| `ruff check` | ran,\
+        \ clean |'\n  echo 'row2=|| Tool | State ||| `ruff format --check` | ran,\
+        \ clean |'\n  echo 'row3=|| Tool | State ||| `mypy --strict` | ran, clean\
+        \ |'\n  echo 'unconfigured='\n} >> \"$GITHUB_OUTPUT\"\n"
+  swift:
+    name: Lint (Swift)
+    needs: detect
+    if: needs.detect.outputs.swift == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      unconfigured: ${{ steps.row.outputs.unconfigured }}
+    steps:
+    - name: Detect a Swift lint configuration
+      id: cfg
+      run: "set -euo pipefail\nif [ -f .swift-format ]; then\n  echo \"tool=swift-format\"\
+        \ >> \"$GITHUB_OUTPUT\"; echo \"configured=true\" >> \"$GITHUB_OUTPUT\"\n\
+        elif [ -f .swiftlint.yml ] || [ -f .swiftlint.yaml ]; then\n  echo \"tool=swiftlint\"\
+        \ >> \"$GITHUB_OUTPUT\"; echo \"configured=true\" >> \"$GITHUB_OUTPUT\"\n\
+        else\n  echo \"tool=none\" >> \"$GITHUB_OUTPUT\"; echo \"configured=false\"\
+        \ >> \"$GITHUB_OUTPUT\"\n  if [ \"false\" = \"true\"\
+        \ ]; then\n    echo \"::error::require-swift-lint is true but the calling\
+        \ repo has neither .swift-format nor .swiftlint.yml\"\n    exit 1\n  fi\n\
+        \  echo \"::warning title=Swift lint DID NOT RUN::This repository has Swift\
+        \ sources but no .swift-format and no .swiftlint.yml. No Swift lint was performed,\
+        \ so this job did NOT verify Swift style.\"\nfi\n"
+    - name: swift-format lint
+      if: steps.cfg.outputs.tool == 'swift-format'
+      run: "set -euo pipefail\ncommand -v swift-format >/dev/null 2>&1 || { echo \"\
+        ::error::.swift-format exists but the swift-format binary is unavailable \u2014\
+        \ cannot run the check\"; exit 1; }\nswift-format lint --recursive --strict\
+        \ .\n"
+    - name: SwiftLint
+      if: steps.cfg.outputs.tool == 'swiftlint'
+      run: "set -euo pipefail\nif ! command -v swiftlint >/dev/null 2>&1; then\n \
+        \ echo \"::error::.swiftlint.yml exists but swiftlint is not installed \u2014\
+        \ cannot run the check. Install it with: brew install swiftlint\"\n  exit\
+        \ 1\nfi\nswiftlint lint --strict\n"
+    - id: row
+      env:
+        TOOL: ${{ steps.cfg.outputs.tool }}
+      run: "set -euo pipefail\nif [ \"$TOOL\" = \"none\" ]; then\n  echo 'row=|| Tool\
+        \ | State ||| Swift lint | **DID NOT RUN** \u2014 unconfigured |' >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"unconfigured=swift-lint\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"\
+        row=|| Tool | State ||| \\`$TOOL\\` | ran, clean |\" >> \"$GITHUB_OUTPUT\"\
+        \n  echo \"unconfigured=\" >> \"$GITHUB_OUTPUT\"\nfi\n"
+  summary:
+    name: Lint summary
+    needs:
+    - detect
+    - go
+    - python
+    - swift
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.render.outputs.report }}
+      unconfigured: ${{ steps.render.outputs.unconfigured }}
+    steps:
+    - id: render
+      env:
+        GO: ${{ needs.go.outputs.report }}
+        GO_UNCONF: ${{ needs.go.outputs.unconfigured }}
+        PY: ${{ needs.python.outputs.report }}
+        PY_UNCONF: ${{ needs.python.outputs.unconfigured }}
+        SWIFT: ${{ needs.swift.outputs.report }}
+        SWIFT_UNCONF: ${{ needs.swift.outputs.unconfigured }}
+      run: "set -euo pipefail\nrows=\"\"\ngaps=\"\"\nadd() { rows=\"${rows}${1}\"\
+        $'\\n'; }\nfor pair in \"Go|${GO}|${GO_UNCONF}\" \"Python|${PY}|${PY_UNCONF}\"\
+        \ \"Swift|${SWIFT}|${SWIFT_UNCONF}\"; do\n  lang=\"${pair%%|*}\"; rest=\"\
+        ${pair#*|}\"\n  body=\"${rest%%|*}\"; unconf=\"${rest##*|}\"\n  if [ -n \"\
+        $body\" ]; then\n    add \"| ${lang} |$(printf '%s' \"$body\" | tr '\\n' '\
+        \ ' | sed 's/^ *//;s/ *$//')|\"\n  else\n    add \"| ${lang} | _no ${lang}\
+        \ sources detected \u2014 nothing to lint_ |\"\n  fi\n  [ -n \"$unconf\" ]\
+        \ && gaps=\"${gaps}${lang}:${unconf} \"\ndone\nunconfigured=\"$(printf '%s'\
+        \ \"$gaps\" | sed 's/ *$//')\"\n{\n  echo \"### Lint coverage\"\n  echo\n\
+        \  echo \"| Language | Tools |\"\n  echo \"| --- | --- |\"\n  printf '%s'\
+        \ \"$rows\"\n  echo\n  if [ -n \"$unconfigured\" ]; then\n    echo \"**Not\
+        \ verified** (configured-but-missing, or unconfigured tools): \\`${unconfigured}\\\
+        `\"\n    echo\n    echo \"A green job here means *the tools listed as clean\
+        \ were clean*. It does not\"\n    echo \"mean the unconfigured tools passed\
+        \ \u2014 they did not run.\"\n  else\n    echo \"Every configured linter ran\
+        \ and was clean.\"\n  fi\n} >> \"$GITHUB_STEP_SUMMARY\"\nprintf 'report<<EOF\\\
+        n%s\\nEOF\\n' \"$rows\" >> \"$GITHUB_OUTPUT\"\necho \"unconfigured=$unconfigured\"\
+        \ >> \"$GITHUB_OUTPUT\"\n"

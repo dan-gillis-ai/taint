@@ -1,0 +1,249 @@
+# Managed by dan-gillis-ai/platform-gitops — DO NOT EDIT IN PLACE.
+#
+# Copied from platform-gitops-workflows by the reconciler. Drift is corrected
+# on the nightly reconcile, and a change here will be reverted.
+# Fix the pipeline in the library, then reconcile.
+name: Test
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  detect:
+    name: Detect languages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.detect.outputs.go }}
+      python: ${{ steps.detect.outputs.python }}
+    steps:
+    - uses: actions/checkout@v4
+    - id: detect
+      run: "set -euo pipefail\n# Presence of the module manifest, not a caller flag:\
+        \ a stale flag\n# would let a suite silently stop running.\n[ -f go.mod ]\
+        \ && echo \"go=true\" >> \"$GITHUB_OUTPUT\" || echo \"go=false\" >> \"$GITHUB_OUTPUT\"\
+        \nif [ -f pyproject.toml ] || [ -f setup.py ] || [ -d src ]; then\n  echo\
+        \ \"python=true\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"python=false\" >>\
+        \ \"$GITHUB_OUTPUT\"\nfi\n"
+  go:
+    name: Test (Go)
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      artifacts: ${{ steps.row.outputs.artifacts }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27'
+        cache: 'on'
+    - name: Unit tests
+      id: run
+      env:
+        RACE: true
+        COVERAGE: false
+      run: "set -euo pipefail\n# -covermode=atomic is mandatory alongside -race: the\
+        \ coverage\n# counters are themselves updated concurrently, so a non-atomic\
+        \ mode\n# produces a racy profile rather than a wrong-but-quiet one.\nflags=()\n\
+        [ \"$RACE\" = \"true\" ] && flags+=(\"-race\")\nif [ \"$COVERAGE\" = \"true\"\
+        \ ]; then\n  flags+=(\"-covermode=atomic\" \"-coverprofile=coverage.out\"\
+        )\n  echo \"dir=coverage-go-${GITHUB_SHA}\" >> \"$GITHUB_OUTPUT\"\nfi\ngo\
+        \ test \"${flags[@]}\" -timeout \"$(( 20 - 5\
+        \ ))m\" ./...\n"
+    - name: Upload coverage
+      if: 'false'
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage-go-${{ github.sha }}
+        path: coverage.out
+        if-no-files-found: error
+        retention-days: 14
+    - id: row
+      env:
+        RACE: true
+        COVERAGE: false
+      run: "set -euo pipefail\nrace_state=\"OFF\"; [ \"$RACE\" = \"true\" ] && race_state=\"\
+        on (-race)\"\ncov_state=\"off\"; [ \"$COVERAGE\" = \"true\" ] && cov_state=\"\
+        collected\"\necho \"row=|| Language | Race detector | Coverage | Tests |||\
+        \ Go | ${race_state} | ${cov_state} | pass |\" >> \"$GITHUB_OUTPUT\"\nif [\
+        \ \"$COVERAGE\" = \"true\" ]; then\n  echo \"artifacts=coverage-go-${GITHUB_SHA}\"\
+        \ >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"artifacts=\" >> \"$GITHUB_OUTPUT\"\
+        \nfi\n"
+  python:
+    name: Test (Python)
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      artifacts: ${{ steps.row.outputs.artifacts }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+    - name: Install project (dev extras)
+      run: "set -euo pipefail\npython -m pip install --upgrade pip\nif grep -q 'optional-dependencies'\
+        \ pyproject.toml 2>/dev/null || grep -qE '^\\s*dev\\s*=' pyproject.toml 2>/dev/null;\
+        \ then\n  pip install -e '.[dev]'\nelif [ -f requirements-dev.txt ]; then\n\
+        \  pip install -r requirements-dev.txt\nelse\n  echo \"::notice::No dev extras\
+        \ found; installing the test runner directly\"\n  pip install pytest 'pytest-cov==7.0.0'\n\
+        fi\n"
+    - name: Verify the test runner and its timeout plugin are present
+      id: probe
+      env:
+        COVERAGE: false
+      run: "set -euo pipefail\nmissing=0\npython -c 'import pytest' 2>/dev/null ||\
+        \ { echo \"::error::pytest is not installed after the install step\"; missing=1;\
+        \ }\nif [ \"$COVERAGE\" = \"true\" ]; then\n  python -c 'import pytest_cov'\
+        \ 2>/dev/null || {\n    echo \"::error::coverage was requested but pytest-cov\
+        \ is unavailable. Requesting coverage that silently produces nothing is worse\
+        \ than not requesting it.\"\n    missing=1\n  }\nfi\n# pytest-timeout is optional:\
+        \ it produces a precise failure naming\n# the test that hung, which timeout-minutes\
+        \ alone cannot do. Its\n# absence degrades the message, not the safety, so\
+        \ it is not fatal.\nif python -c 'import pytest_timeout' 2>/dev/null; then\n\
+        \  echo \"has_timeout=true\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"::notice::pytest-timeout\
+        \ is not installed; per-test timeouts are disabled (job timeout-minutes still\
+        \ applies)\"\n  echo \"has_timeout=false\" >> \"$GITHUB_OUTPUT\"\nfi\nexit\
+        \ \"$missing\"\n"
+    - name: Unit tests
+      env:
+        COVERAGE: false
+        HAS_TIMEOUT: ${{ steps.probe.outputs.has_timeout }}
+      run: "set -euo pipefail\nextra=\"\"\n[ \"$HAS_TIMEOUT\" = \"true\" ] && extra=\"\
+        --timeout=$(( 20 * 60 - 120 ))\"\nif [ \"$COVERAGE\"\
+        \ = \"true\" ]; then\n  python -m pytest -q $extra --cov --cov-report=term-missing\
+        \ --cov-report=xml:coverage.xml\nelse\n  python -m pytest -q $extra\nfi\n"
+    - name: Upload coverage
+      if: 'false'
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage-python-${{ github.sha }}
+        path: coverage.xml
+        if-no-files-found: error
+        retention-days: 14
+    - id: row
+      env:
+        COVERAGE: false
+      run: "set -euo pipefail\ncov_state=\"off\"; [ \"$COVERAGE\" = \"true\" ] &&\
+        \ cov_state=\"collected\"\necho \"row=|| Language | Race detector | Coverage\
+        \ | Tests ||| Python | n/a (CPython GIL serialises bytecode; use a thread-safe\
+        \ harness to assert on shared state) | ${cov_state} | pass |\" >> \"$GITHUB_OUTPUT\"\
+        \nif [ \"$COVERAGE\" = \"true\" ]; then\n  echo \"artifacts=coverage-python-${GITHUB_SHA}\"\
+        \ >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"artifacts=\" >> \"$GITHUB_OUTPUT\"\
+        \nfi\n"
+  swift:
+    name: Test (Swift)
+    if: 'false'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.row.outputs.row }}
+      artifacts: ${{ steps.row.outputs.artifacts }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Resolve the xcodebuild scheme
+      id: scheme
+      env:
+        REQUESTED: ''
+        BUDGET_MINUTES: 20
+      run: "set -euo pipefail\nif [ -n \"$REQUESTED\" ]; then\n  echo \"scheme=$REQUESTED\"\
+        \ >> \"$GITHUB_OUTPUT\"\n  echo \"Using caller-specified scheme: $REQUESTED\"\
+        \n  exit 0\nfi\n# -list -json is machine-readable; parsing it beats grepping\
+        \ human\n# output. Project and workspace shapes differ, so check both.\nxcodebuild\
+        \ -list -json > list.json\nschemes=\"$(python3 - <<'PY'\nimport json\nwith\
+        \ open(\"list.json\") as fh:\n    data = json.load(fh)\nfor key in (\"workspace\"\
+        , \"project\"):\n    found = data.get(key, {}).get(\"schemes\") or []\n  \
+        \  shared = [s for s in found if not s.endswith(\" Tests\")]\n    if shared:\n\
+        \        print(\"\\n\".join(shared))\n        break\nPY\n)\"\ncount=\"$(printf\
+        \ '%s' \"$schemes\" | grep -c . || true)\"\nif [ \"$count\" -eq 0 ]; then\n\
+        \  echo \"::error::No shared xcodebuild scheme found. A test job that builds\
+        \ nothing is not a pass \u2014 create a shared scheme in the calling repo\
+        \ or pass the swift-scheme input.\"\n  exit 1\nelif [ \"$count\" -gt 1 ];\
+        \ then\n  echo \"::error::The project exposes $count shared schemes. Refusing\
+        \ to guess which one to test:\"\n  printf '  - %s\\n' $schemes\n  echo \"\
+        Pass the swift-scheme input explicitly.\"\n  exit 1\nfi\necho \"scheme=$schemes\"\
+        \ >> \"$GITHUB_OUTPUT\"\necho \"Auto-detected scheme: $schemes\"\n"
+    - name: Unit tests
+      id: run
+      env:
+        SCHEME: ${{ steps.scheme.outputs.scheme }}
+        COVERAGE: false
+        BUDGET_MINUTES: 20
+      run: "set -euo pipefail\nargs=(\n  test\n  -scheme \"$SCHEME\"\n  -destination\
+        \ \"platform=macOS,arch=$(uname -m)\"\n  # Per-test and per-suite caps inside\
+        \ XCTest, so a hanging test is\n  # reported as a hang against a named test\
+        \ rather than as a job\n  # timeout against the whole suite. timeout-minutes\
+        \ is still the\n  # outer backstop.\n  -test-timeouts-enabled YES\n  -default-test-execution-time-allowance\
+        \ $(( $BUDGET_MINUTES * 60 - 120 ))\n)\nif [ \"$COVERAGE\" = \"true\" ]; then\n\
+        \  rm -rf TestResults.xcresult\n  args+=(-resultBundlePath TestResults.xcresult\
+        \ -enableCodeCoverage YES)\nfi\nset -x\nxcodebuild \"${args[@]}\"\n"
+    - name: Upload coverage
+      if: 'false'
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage-swift-${{ github.sha }}
+        path: TestResults.xcresult
+        if-no-files-found: error
+        retention-days: 14
+    - id: row
+      env:
+        COVERAGE: false
+      run: 'set -euo pipefail
+
+        cov_state="off"; [ "$COVERAGE" = "true" ] && cov_state="collected"
+
+        echo "row=|| Language | Race detector | Coverage | Tests ||| Swift (TSan-capable;
+        \`swift test --sanitize=thread\` locally for a data-race pass) | ${cov_state}
+        | pass |" >> "$GITHUB_OUTPUT"
+
+        echo "artifacts=" >> "$GITHUB_OUTPUT"
+
+        '
+  summary:
+    name: Test summary
+    needs:
+    - detect
+    - go
+    - python
+    - swift
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.render.outputs.report }}
+      artifacts: ${{ steps.render.outputs.artifacts }}
+    steps:
+    - id: render
+      env:
+        GO: ${{ needs.go.outputs.report }}
+        PY: ${{ needs.python.outputs.report }}
+        SW: ${{ needs.swift.outputs.report }}
+      run: "set -euo pipefail\nrows=\"\"\nartifacts=\"\"\nfor pair in \"Go|${GO}\"\
+        \ \"Python|${PY}\" \"Swift|${SW}\"; do\n  lang=\"${pair%%|*}\"; body=\"${pair#*|}\"\
+        \n  if [ -n \"$body\" ]; then\n    rows=\"${rows}${body}\"$'\\n'\n  else\n\
+        \    rows=\"${rows}|| ${lang} | not run | off | _no suite executed_ |\"$'\\\
+        n'\n  fi\ndone\nfor a in \"${{ needs.go.outputs.artifacts }}\" \"${{ needs.python.outputs.artifacts\
+        \ }}\"; do\n  [ -n \"$a\" ] && artifacts=\"${artifacts}${artifacts:+,}${a}\"\
+        \ndone\n{\n  echo \"### Unit tests\"\n  echo\n  echo \"$rows\"\n  if [ -n\
+        \ \"$artifacts\" ]; then\n    echo\n    echo \"Coverage artifacts: \\`${artifacts}\\\
+        `\"\n  fi\n} >> \"$GITHUB_STEP_SUMMARY\"\nprintf 'report<<EOF\\n%s\\nEOF\\\
+        n' \"$rows\" >> \"$GITHUB_OUTPUT\"\necho \"artifacts=$artifacts\" >> \"$GITHUB_OUTPUT\""

@@ -1,0 +1,57 @@
+# Managed by dan-gillis-ai/platform-gitops — DO NOT EDIT IN PLACE.
+#
+# Copied from platform-gitops-workflows by the reconciler. Drift is corrected
+# on the nightly reconcile, and a change here will be reverted.
+# Fix the pipeline in the library, then reconcile.
+name: Security
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  vulnerability-audit:
+    name: Vulnerability audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.27'
+    - name: govulncheck (Go)
+      if: ${{ hashFiles('go.mod') != '' }}
+      run: 'set -euo pipefail
+
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+
+        govulncheck ./...
+
+        '
+    - name: Dependency review (PR only)
+      if: github.event_name == 'pull_request'
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: high
+  permissions-audit:
+    name: Workflow permissions audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@v4
+    - name: Every job declares explicit permissions
+      run: "set -euo pipefail\nbad=0\nfor wf in .github/workflows/*.y*ml; do\n  [\
+        \ -e \"$wf\" ] || continue\n  # A workflow with a top-level permissions block\
+        \ is fine; the\n  # failure mode being hunted is the default token silently\
+        \ being\n  # broader than the job needs.\n  if ! grep -qE '^\\s*permissions:'\
+        \ \"$wf\"; then\n    echo \"::warning file=${wf}::no permissions block \u2014\
+        \ inherits the default token\"\n    bad=1\n  fi\ndone\n# Advisory only: this\
+        \ warns rather than blocks, because adopting\n# explicit permissions is incremental\
+        \ and failing every repo on\n# day one helps nobody.\nexit 0"
