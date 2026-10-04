@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-harness/taint"
+	"github.com/dan-gillis-ai/taint"
 )
 
 type vectors struct {
