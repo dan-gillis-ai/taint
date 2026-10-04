@@ -5,5 +5,5 @@ on:
 permissions:
   contents: read
 jobs:
-  harden:
-    uses: step-security/harden-runner/.github/workflows/harden-runner.yml@main
+  test:
+    uses: dan-gillis-ai/policy/.github/workflows/lib.yml@9bd6c5846645e6b839472f01984c92f9cbefc2db
