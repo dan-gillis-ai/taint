@@ -40,13 +40,13 @@ type vectors struct {
 		Expect string `json:"expect"`
 	} `json:"parse_cases"`
 	InvariantCases []struct {
-		Name            string `json:"name"`
-		Why             string `json:"why"`
-		Steps           []struct {
-			Op       string `json:"op"`
-			Level    string `json:"level"`
-			Origin   string `json:"origin"`
-			Ceiling  string `json:"ceiling"`
+		Name  string `json:"name"`
+		Why   string `json:"why"`
+		Steps []struct {
+			Op      string `json:"op"`
+			Level   string `json:"level"`
+			Origin  string `json:"origin"`
+			Ceiling string `json:"ceiling"`
 		} `json:"steps"`
 		ExpectLevel     string `json:"expect_level"`
 		ExpectSatisfies *bool  `json:"expect_satisfies"`
