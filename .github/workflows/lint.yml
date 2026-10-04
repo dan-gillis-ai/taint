@@ -3,11 +3,6 @@
 # Copied from dan-gllis-ai/platform-gitops-workflows by reconcile.py. Drift is corrected on the nightly
 # reconcile, so a local edit will be reverted.
 # Fix the pipeline in the library, then reconcile.
-# Managed by dan-gillis-ai/platform-gitops — DO NOT EDIT IN PLACE.
-#
-# Copied from dan-gllis-ai/platform-gitops-workflows by reconcile.py. Drift is corrected on the nightly
-# reconcile, so a local edit will be reverted.
-# Fix the pipeline in the library, then reconcile.
 name: Lint
 'on':
   push:
@@ -62,6 +57,27 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: '1.27'
+    # The sibling modules (contracts/gen, policy, taint) are PRIVATE, so Go
+    # must not treat them as public: no proxy, no sumdb. Without this the
+    # build dies with
+    #   could not read Username for 'https://github.com': terminal prompts disabled
+    # because the runner has no credential helper for github.com and cannot
+    # prompt.
+    #
+    # The token supplies that credential for the checkout's own GITHUB_TOKEN.
+    # It is never written to disk or echoed.
+    - name: Configure private module resolution
+      env:
+        GOPRIVATE: github.com/dan-gillis-ai/*
+        GONOSUMDB: github.com/dan-gillis-ai/*
+        GONOSUMCHECK: '1'
+        GOFLAGS: -mod=mod
+        GIT_CONFIG_COUNT: '1'
+        GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/.insteadOf
+        GIT_CONFIG_VALUE_0: https://github.com/
+      run: |
+        git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+        echo "GOPRIVATE=$GOPRIVATE"
         cache: true
     - name: gofmt (must produce NO output)
       run: "set -euo pipefail\ncommand -v gofmt >/dev/null 2>&1 || { echo \"::error::gofmt\
