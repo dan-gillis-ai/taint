@@ -4,6 +4,7 @@ on:
     branches: [main]
 permissions:
   contents: read
+  actions: read
 jobs:
   test:
     uses: dan-gillis-ai/policy/.github/workflows/lib.yml@main
