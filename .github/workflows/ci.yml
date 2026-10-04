@@ -5,5 +5,5 @@ on:
 permissions:
   contents: read
 jobs:
-  probe:
-    uses: dorny/paths-filter@v3@main
+  harden:
+    uses: step-security/harden-runner/.github/workflows/harden-runner.yml@main
