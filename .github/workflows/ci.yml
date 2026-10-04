@@ -1,0 +1,9 @@
+name: CI
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  probe:
+    uses: dorny/paths-filter@v3@main
