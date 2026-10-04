@@ -63,15 +63,11 @@ jobs:
       env:
         GOPRIVATE: github.com/dan-gillis-ai/*
         GONOSUMDB: github.com/dan-gillis-ai/*
-        GONOSUMCHECK: '1'
         GOFLAGS: -mod=mod
-        GIT_CONFIG_COUNT: '1'
-        GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/.insteadOf
-        GIT_CONFIG_VALUE_0: https://github.com/
+        TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+        git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
         echo "GOPRIVATE=$GOPRIVATE"
-        cache: true
     - name: Vet
       run: go vet ./...
     - name: Test
