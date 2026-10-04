@@ -6,4 +6,4 @@ permissions:
   contents: read
 jobs:
   security:
-    uses: dan-gillis-ai/platform-gitops-workflows/.github/workflows/security.yml@2d99e6ff70d1443f60eb0e4d2ed2b00829bf40b1
+    uses: dan-gillis-ai/platform-gitops-workflows/.github/workflows/security.yml@main
