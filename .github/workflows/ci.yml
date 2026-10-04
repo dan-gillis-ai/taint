@@ -5,7 +5,5 @@ on:
 permissions:
   contents: read
 jobs:
-  public-uses:
-    uses: actions/checkout@v4
-  private-uses:
-    uses: dan-gillis-ai/platform-gitops-workflows/.github/workflows/security.yml@main
+  test:
+    uses: ./.github/workflows/lib.yml
