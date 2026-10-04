@@ -57,7 +57,7 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: '1.27'
-        cache: 'on'
+        cache: true
     - name: gofmt (must produce NO output)
       run: "set -euo pipefail\ncommand -v gofmt >/dev/null 2>&1 || { echo \"::error::gofmt\
         \ is not on PATH \u2014 cannot verify formatting\"; exit 1; }\noffenders=\"\
