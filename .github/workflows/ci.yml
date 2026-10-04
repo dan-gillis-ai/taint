@@ -6,4 +6,4 @@ permissions:
   contents: read
 jobs:
   test:
-    uses: ./.github/workflows/lib.yml
+    uses: dan-gillis-ai/policy/.github/workflows/lib.yml@main
