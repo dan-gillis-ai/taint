@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Single source of truth for taint lattice conformance. Both the Go and Python",
+    "implementations must produce identical results for every vector. CI runs this",
+    "against both and fails the build on any divergence, because the Go device agent",
+    "is the enforcement point and the Python side does the labelling.",
+    "",
+    "Run:  make taint-conformance"
+  ],
+  "levels": [
+    { "name": "trusted", "value": 0 },
+    { "name": "semi", "value": 1 },
+    { "name": "untrusted", "value": 2 },
+    { "name": "hostile", "value": 3 }
+  ],
+  "join_cases": [
+    { "name": "join_of_none_is_trusted", "inputs": [], "expect": "trusted" },
+    { "name": "join_single", "inputs": ["untrusted"], "expect": "untrusted" },
+    { "name": "join_takes_max", "inputs": ["trusted", "semi", "trusted"], "expect": "semi" },
+    { "name": "untrusted_dominates_semi", "inputs": ["semi", "untrusted"], "expect": "untrusted" },
+    { "name": "hostile_dominates_all", "inputs": ["trusted", "semi", "untrusted", "hostile"], "expect": "hostile" },
+    { "name": "taint_is_sticky", "inputs": ["untrusted", "trusted", "semi", "trusted"], "expect": "untrusted" }
+  ],
+  "ceiling_cases": [
+    { "name": "read_ceiling_allows_web", "taint": "untrusted", "ceiling": "untrusted", "satisfies": true },
+    { "name": "read_ceiling_allows_semi", "taint": "semi", "ceiling": "untrusted", "satisfies": true },
+    { "name": "read_ceiling_blocks_hostile", "taint": "hostile", "ceiling": "untrusted", "satisfies": false },
+    { "name": "shell_ceiling_blocks_web", "taint": "untrusted", "ceiling": "semi", "satisfies": false },
+    { "name": "shell_ceiling_allows_model_output", "taint": "semi", "ceiling": "semi", "satisfies": true },
+    { "name": "ui_control_ceiling_blocks_web", "taint": "untrusted", "ceiling": "semi", "satisfies": false },
+    { "name": "equal_satisfies_ceiling", "taint": "semi", "ceiling": "semi", "satisfies": true },
+    { "name": "model_output_is_never_trusted", "taint": "semi", "ceiling": "trusted", "satisfies": false }
+  ],
+  "parse_cases": [
+    { "name": "parse_lowercase", "input": "untrusted", "expect": "untrusted" },
+    { "name": "parse_uppercase", "input": "UNTRUSTED", "expect": "untrusted" },
+    { "name": "parse_with_whitespace", "input": "  semi  ", "expect": "semi" },
+    { "name": "parse_unknown_fails_closed", "input": "definitely-not-a-level", "expect": "hostile" },
+    { "name": "parse_empty_fails_closed", "input": "", "expect": "hostile" },
+    { "name": "parse_numeric_string_fails_closed", "input": "2", "expect": "hostile" }
+  ],
+  "invariant_cases": [
+    {
+      "name": "web_content_cannot_reach_a_shell",
+      "why": "The core security claim: content fetched from the network cannot cause a shell command.",
+      "steps": [
+        { "op": "label", "level": "untrusted", "origin": "https://example.com/readme" },
+        { "op": "join" },
+        { "op": "check_ceiling", "ceiling": "semi" }
+      ],
+      "expect_level": "untrusted",
+      "expect_satisfies": false
+    },
+    {
+      "name": "model_output_can_still_read_files",
+      "why": "The agent must be able to act on its own reasoning, or it cannot work.",
+      "steps": [
+        { "op": "label", "level": "semi", "origin": "model.generation" },
+        { "op": "join" },
+        { "op": "check_ceiling", "ceiling": "untrusted" }
+      ],
+      "expect_level": "semi",
+      "expect_satisfies": true
+    },
+    {
+      "name": "taint_survives_sanitisation_attempt",
+      "why": "A tool that 'cleaned' its output must not be able to lower the label.",
+      "steps": [
+        { "op": "label", "level": "untrusted", "origin": "web" },
+        { "op": "join" },
+        { "op": "label", "level": "semi", "origin": "sanitiser_output" },
+        { "op": "join" }
+      ],
+      "expect_level": "untrusted",
+      "expect_satisfies": null
+    }
+  ]
+}

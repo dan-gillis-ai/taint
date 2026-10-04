@@ -55,8 +55,10 @@ type vectors struct {
 
 func loadVectors(t *testing.T) vectors {
 	t.Helper()
-	// vectors.json sits one level up from go/
-	path := filepath.Join("..", "vectors.json")
+	// vectors.json lives at the module root. It sat one level up in the
+	// monorepo, where `go/` was a subdirectory; the repo split moved this
+	// package to the root, so the relative parent no longer resolves.
+	path := filepath.Join("vectors.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read vectors: %v", err)
