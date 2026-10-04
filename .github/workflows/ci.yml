@@ -1,9 +1,0 @@
-name: CI
-on:
-  push:
-    branches: [main]
-permissions:
-  contents: read
-jobs:
-  test:
-    uses: dan-gillis-ai/policy/.github/workflows/lib.yml@9bd6c5846645e6b839472f01984c92f9cbefc2db
