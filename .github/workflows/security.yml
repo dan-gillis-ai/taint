@@ -38,7 +38,17 @@ jobs:
         GOPRIVATE: github.com/dan-gillis-ai/*
         GONOSUMDB: github.com/dan-gillis-ai/*
         GOFLAGS: -mod=mod
-        TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # A GitHub App installation token, or a PAT, that can read contracts,
+        # policy and taint.
+        #
+        # NOT secrets.GITHUB_TOKEN: that token is scoped to THIS repository and
+        # returns "repository not found" for every sibling. Cross-repo private
+        # access needs a credential that spans the org.
+        #
+        # Falls back to GITHUB_TOKEN so a repo with no libraries to fetch (or an
+        # org that has vendored them) still runs rather than failing on a
+        # missing secret.
+        TOKEN: ${{ secrets.MODULES_READ_TOKEN || secrets.GITHUB_TOKEN }}
       run: |
         git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
         echo "GOPRIVATE=$GOPRIVATE"
