@@ -31,8 +31,8 @@ jobs:
 
         # a stale flag would let CI skip a suite that exists.
 
-        if [ -f go.mod ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false"
-        >> "$GITHUB_OUTPUT"; fi
+        if [ -f go.mod ] && [ -n "$(find . -name '*.go' -not -path './.git/*' -print -quit)" ];
+        then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
 
         if [ -f pyproject.toml ] || [ -d src ]; then echo "python=true" >> "$GITHUB_OUTPUT";
         else echo "python=false" >> "$GITHUB_OUTPUT"; fi
