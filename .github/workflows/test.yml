@@ -47,6 +47,11 @@ jobs:
     - uses: actions/setup-go@v5
       with:
         go-version: '1.27'
+        # Defaults to true, and it hard-fails on any repo whose Go module has
+        # no go.sum at the root — `contracts` has a root go.mod but its Go
+        # dependencies live in the nested gen/ module. Re-downloading the
+        # module cache is cheaper than failing a build for a missing cache key.
+        cache: false
     - name: Unit tests
       id: run
       env:
