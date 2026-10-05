@@ -22,21 +22,30 @@ jobs:
     outputs:
       go: ${{ steps.detect.outputs.go }}
       python: ${{ steps.detect.outputs.python }}
+      python_pm: ${{ steps.detect.outputs.python_pm }}
     steps:
     - uses: actions/checkout@v4
     - id: detect
-      run: 'set -euo pipefail
-
+      run: |
+        set -euo pipefail
         # Presence of go.mod at the root is the signal, not a config flag:
-
         # a stale flag would let CI skip a suite that exists.
-
         if [ -f go.mod ] && find . -name "*.go" -not -path "./.git/*" | grep -q .; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
 
-        if [ -f pyproject.toml ] || [ -d src ]; then echo "python=true" >> "$GITHUB_OUTPUT";
-        else echo "python=false" >> "$GITHUB_OUTPUT"; fi
+        if [ -f pyproject.toml ] || [ -d src ]; then echo "python=true" >> "$GITHUB_OUTPUT"; else echo "python=false" >> "$GITHUB_OUTPUT"; fi
 
-        '
+        # Package-manager detection, for the same reason as in test.yml/lint.yml:
+        # `pip install -e '.[dev]'` resolves an optional-dependencies extra, and
+        # PEP 735 [dependency-groups] is a different namespace pip cannot read.
+        if [ -f uv.lock ]; then
+          echo "python_pm=uv" >> "$GITHUB_OUTPUT"
+        elif [ -f pyproject.toml ] && grep -qE '^\s*\[tool\.uv\]' pyproject.toml; then
+          echo "::warning title=uv project without uv.lock::pyproject.toml declares [tool.uv] but there is no uv.lock. Commit a lockfile, or the install falls back to pip and silently drops [dependency-groups]."
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        else
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        fi
+
   go:
     name: Go
     needs: detect
@@ -67,16 +76,46 @@ jobs:
       contents: read
     steps:
     - uses: actions/checkout@v4
+    - name: Set up uv
+      if: needs.detect.outputs.python_pm == 'uv'
+      uses: astral-sh/setup-uv@v10
+      with:
+        version: '0.12.22'
+        python-version: '3.12'
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - uses: actions/setup-python@v5
+      if: needs.detect.outputs.python_pm != 'uv'
       with:
         python-version: '3.12'
+    - name: Install (uv)
+      if: needs.detect.outputs.python_pm == 'uv'
+      run: |
+        set -euo pipefail
+        # --locked, never a bare `uv sync`: a bare sync re-resolves and rewrites
+        # uv.lock on any disagreement with pyproject.toml, so CI would pass
+        # against a lockfile nobody committed. --all-groups so the group NAME
+        # (`dev`, `test`, ...) is never hardcoded here.
+        uv sync --locked --all-groups
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
     - name: Install
-      run: 'set -euo pipefail
-
+      if: needs.detect.outputs.python_pm != 'uv'
+      run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
-
-        pip install -e ''.[dev]''
-
-        '
+        # [project.optional-dependencies] ONLY -- a bare `dev =` line also
+        # matches a PEP 735 [dependency-groups] table, which pip cannot read.
+        if grep -q 'optional-dependencies' pyproject.toml 2>/dev/null; then
+          pip install -e '.[dev]'
+        else
+          pip install pytest
+        fi
     - name: Test
-      run: pytest -q --timeout=300
+      run: |
+        set -euo pipefail
+        # --timeout is applied only when pytest-timeout is actually installed. It
+        # is not in these projects' dev groups, so passing it unconditionally is
+        # an "unrecognized arguments" hard failure, not a safety net.
+        extra=""
+        if python -c 'import pytest_timeout' 2>/dev/null; then extra="--timeout=300"; fi
+        python -m pytest -q $extra

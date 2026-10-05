@@ -22,15 +22,50 @@ jobs:
     outputs:
       go: ${{ steps.detect.outputs.go }}
       python: ${{ steps.detect.outputs.python }}
+      python_pm: ${{ steps.detect.outputs.python_pm }}
     steps:
     - uses: actions/checkout@v4
     - id: detect
-      run: "set -euo pipefail\n# Presence of the module manifest, not a caller flag:\
-        \ a stale flag\n# would let a suite silently stop running.\n[ -f go.mod ]\
-        \ && echo \"go=true\" >> \"$GITHUB_OUTPUT\" || echo \"go=false\" >> \"$GITHUB_OUTPUT\"\
-        \nif [ -f pyproject.toml ] || [ -f setup.py ] || [ -d src ]; then\n  echo\
-        \ \"python=true\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"python=false\" >>\
-        \ \"$GITHUB_OUTPUT\"\nfi\n"
+      run: |
+        set -euo pipefail
+        # Presence of the module manifest, not a caller flag: a stale flag
+        # would let a suite silently stop running.
+        if [ -f go.mod ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
+
+        if [ -f pyproject.toml ] || [ -f setup.py ] || [ -d src ]; then
+          echo "python=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "python=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        # WHICH PYTHON PACKAGE MANAGER, detected from the repo rather than
+        # assumed. This is not a style preference: it decides whether the test
+        # and lint tooling gets installed AT ALL.
+        #
+        # `pip install -e '.[dev]'` resolves a [project.optional-dependencies]
+        # extra. PEP 735 [dependency-groups] is a DIFFERENT namespace that pip
+        # does not read. So on a project that declares pytest/ruff/mypy under
+        # [dependency-groups], the pip path exits 0 having installed ZERO test
+        # tooling, and every downstream check then reports the tool missing.
+        # That silent zero is the dangerous part: an install that installed
+        # nothing still reads as a successful install.
+        #
+        # uv.lock is the signal because it is the file uv reads and pip ignores.
+        # A [tool.uv] table with NO lockfile gets a warning: --locked cannot
+        # verify anything there, so the install falls back to pip and drops the
+        # dependency groups silently.
+        #
+        # go.mod and pyproject.toml coexisting is NOT ambiguous: that is two
+        # suites, and each job drives its own toolchain.
+        if [ -f uv.lock ]; then
+          echo "python_pm=uv" >> "$GITHUB_OUTPUT"
+        elif [ -f pyproject.toml ] && grep -qE '^\s*\[tool\.uv\]' pyproject.toml; then
+          echo "::warning title=uv project without uv.lock::pyproject.toml declares [tool.uv] but there is no uv.lock, so a --locked sync cannot verify it. Commit a lockfile, or the install falls back to pip and silently drops [dependency-groups]."
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        else
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        fi
+
   go:
     name: Test (Go)
     needs: detect
@@ -97,17 +132,66 @@ jobs:
       artifacts: ${{ steps.row.outputs.artifacts }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - name: Set up uv
+      if: needs.detect.outputs.python_pm == 'uv'
+      uses: astral-sh/setup-uv@v10
+      with:
+        # Pinned: an unpinned resolver is how a lockfile that verifies today
+        # starts failing tomorrow for reasons unrelated to any commit.
+        version: '0.12.22'
+        python-version: '3.12'
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
+    - name: Set up Python
+      # setup-python's `cache: pip` keys off a pip-resolvable requirements file,
+      # which a uv project does not have. So the uv branch brings its own cache
+      # via setup-uv, and this step is skipped rather than failing on a missing
+      # dependency file.
+      if: needs.detect.outputs.python_pm != 'uv'
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         cache: pip
+    - name: Install (uv)
+      if: needs.detect.outputs.python_pm == 'uv'
+      run: |
+        set -euo pipefail
+        # --locked, NEVER a bare `uv sync`. A bare sync RE-RESOLVES and rewrites
+        # uv.lock whenever it disagrees with pyproject.toml, so a stale lockfile
+        # quietly installs different code than the one that was reviewed, and CI
+        # goes green against a lockfile nobody committed. --locked fails
+        # instead, which is the honest outcome: re-lock in its own commit.
+        #
+        # --all-groups, not `--group dev`: the group NAME is per-repo policy
+        # (`dev`, `test`, `lint`, anything), so hardcoding one installs nothing
+        # in every repo that picked a different name. This installs whatever
+        # [dependency-groups] declares without having to guess.
+        uv sync --locked --all-groups
+        # uv builds into ./.venv, which nothing else on PATH can see. Without
+        # this, `python -m pytest` below runs against the system interpreter and
+        # reports pytest missing -- the same symptom, merely relocated.
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        # Report the venv explicitly: GITHUB_PATH takes effect on LATER steps, so
+        # `command -v python` here would still name the pre-existing interpreter
+        # and print something misleading.
+        echo "venv python: $("$PWD/.venv/bin/python" -V 2>&1) at $PWD/.venv/bin"
     - name: Install project (dev extras)
-      run: "set -euo pipefail\npython -m pip install --upgrade pip\nif grep -q 'optional-dependencies'\
-        \ pyproject.toml 2>/dev/null || grep -qE '^\\s*dev\\s*=' pyproject.toml 2>/dev/null;\
-        \ then\n  pip install -e '.[dev]'\nelif [ -f requirements-dev.txt ]; then\n\
-        \  pip install -r requirements-dev.txt\nelse\n  echo \"::notice::No dev extras\
-        \ found; installing the test runner directly\"\n  pip install pytest 'pytest-cov==7.0.0'\n\
-        fi\n"
+      if: needs.detect.outputs.python_pm != 'uv'
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        # Match [project.optional-dependencies] ONLY. The previous check also
+        # accepted a bare `dev =` line, which a PEP 735 [dependency-groups] table
+        # matches -- so a uv project took this branch and installed nothing.
+        if grep -q 'optional-dependencies' pyproject.toml 2>/dev/null; then
+          pip install -e '.[dev]'
+        elif [ -f requirements-dev.txt ]; then
+          pip install -r requirements-dev.txt
+        else
+          echo "::notice::No dev extras found; installing the test runner directly"
+          pip install pytest 'pytest-cov==7.0.0'
+        fi
+
     - name: Verify the test runner and its timeout plugin are present
       id: probe
       env:

@@ -22,26 +22,52 @@ jobs:
     outputs:
       go: ${{ steps.detect.outputs.go }}
       python: ${{ steps.detect.outputs.python }}
+      python_pm: ${{ steps.detect.outputs.python_pm }}
       swift: ${{ steps.detect.outputs.swift }}
     steps:
     - uses: actions/checkout@v4
     - id: detect
       env:
         REQUESTED: auto
-      run: "set -euo pipefail\nrequested=\"${REQUESTED:-auto}\"\n# NOT named `select`:\
-        \ that is a bash reserved word, so `select() { \u2026 }`\n# is a syntax error\
-        \ at parse time and the whole step dies.\nwant_lang() {\n  # An explicit list\
-        \ is an override: the caller has told us what\n  # exists, so we do not second-guess\
-        \ it with file sniffing.\n  if [ \"$requested\" != \"auto\" ]; then\n    case\
-        \ \",$requested,\" in *\",$1,\"*) echo true ;; *) echo false ;; esac\n   \
-        \ return\n  fi\n  case \"$1\" in\n    go)     [ -f go.mod ] && echo true ||\
-        \ echo false ;;\n    python) { [ -f pyproject.toml ] || [ -f setup.py ] ||\
-        \ [ -f setup.cfg ] || [ -d src ]; } && echo true || echo false ;;\n    swift)\
-        \  { ls ./*.xcodeproj ./*.xcworkspace >/dev/null 2>&1 || [ -d Sources ] ||\
-        \ ls ./**/*.swift >/dev/null 2>&1; } && echo true || echo false ;;\n  esac\n\
-        }\nfor lang in go python swift; do\n  state=\"$(want_lang \"$lang\")\"\n \
-        \ echo \"$lang=$state\" >> \"$GITHUB_OUTPUT\"\n  echo \"detect: $lang=$state\"\
-        \ndone\n"
+      run: |
+        set -euo pipefail
+        requested="${REQUESTED:-auto}"
+        # NOT named `select`: that is a bash reserved word, so `select() { ... }`
+        # is a syntax error at parse time and the whole step dies.
+        want_lang() {
+          # An explicit list is an override: the caller has told us what
+          # exists, so we do not second-guess it with file sniffing.
+          if [ "$requested" != "auto" ]; then
+            case ",$requested," in *",$1,"*) echo true ;; *) echo false ;; esac
+            return
+          fi
+          case "$1" in
+            go)     [ -f go.mod ] && echo true || echo false ;;
+            python) { [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ] || [ -d src ]; } && echo true || echo false ;;
+            swift)  { ls ./*.xcodeproj ./*.xcworkspace >/dev/null 2>&1 || [ -d Sources ] || ls ./**/*.swift >/dev/null 2>&1; } && echo true || echo false ;;
+          esac
+        }
+        for lang in go python swift; do
+          state="$(want_lang "$lang")"
+          echo "$lang=$state" >> "$GITHUB_OUTPUT"
+          echo "detect: $lang=$state"
+        done
+
+        # WHICH PYTHON PACKAGE MANAGER, detected from the repo rather than
+        # assumed. See the note in test.yml: `pip install -e '.[dev]'` resolves
+        # an optional-dependencies extra, while PEP 735 [dependency-groups] is a
+        # DIFFERENT namespace pip does not read. A uv project routed to pip
+        # exits 0 having installed no tooling, and every later check reports the
+        # tool missing -- which reads as "ruff is broken", not "install wrong".
+        if [ -f uv.lock ]; then
+          echo "python_pm=uv" >> "$GITHUB_OUTPUT"
+        elif [ -f pyproject.toml ] && grep -qE '^\s*\[tool\.uv\]' pyproject.toml; then
+          echo "::warning title=uv project without uv.lock::pyproject.toml declares [tool.uv] but there is no uv.lock, so a --locked sync cannot verify it. Commit a lockfile, or the install falls back to pip and silently drops [dependency-groups]."
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        else
+          echo "python_pm=pip" >> "$GITHUB_OUTPUT"
+        fi
+
   go:
     name: Lint (Go)
     needs: detect
@@ -114,17 +140,60 @@ jobs:
       unconfigured: ${{ steps.row.outputs.unconfigured }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - name: Set up uv
+      if: needs.detect.outputs.python_pm == 'uv'
+      uses: astral-sh/setup-uv@v10
+      with:
+        # Pinned: an unpinned resolver is how a lockfile that verifies today
+        # starts failing tomorrow for reasons unrelated to any commit.
+        version: '0.12.22'
+        python-version: '3.12'
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
+    - name: Set up Python
+      if: needs.detect.outputs.python_pm != 'uv'
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         cache: pip
+    - name: Install (uv)
+      if: needs.detect.outputs.python_pm == 'uv'
+      run: |
+        set -euo pipefail
+        # --locked, NEVER a bare `uv sync`: a bare sync re-resolves and rewrites
+        # uv.lock on any disagreement with pyproject.toml, so a stale lockfile
+        # quietly lints different code than the one that was reviewed. --locked
+        # fails instead, which is the honest outcome.
+        #
+        # --all-groups, not `--group dev`: the group NAME is per-repo policy, so
+        # hardcoding one installs nothing wherever a repo called it `test` or
+        # `lint`. Installs whatever [dependency-groups] declares.
+        uv sync --locked --all-groups
+        # ruff and mypy are console scripts in ./.venv/bin, which is not on PATH
+        # by default -- without this they are "not available" and the gate below
+        # fails for the same reason it did under pip.
+        echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+        # Report the venv explicitly: GITHUB_PATH takes effect on LATER steps, so
+        # `command -v python` here would still name the pre-existing interpreter
+        # and print something misleading.
+        echo "venv python: $("$PWD/.venv/bin/python" -V 2>&1) at $PWD/.venv/bin"
     - name: Install project (dev extras)
-      run: "set -euo pipefail\npython -m pip install --upgrade pip\nif grep -qE '^\\\
-        s*(dev|test|lint)?\\s*=?\\s*\\[' pyproject.toml 2>/dev/null || grep -q 'optional-dependencies'\
-        \ pyproject.toml 2>/dev/null; then\n  pip install -e '.[dev]'\nelif [ -f requirements-dev.txt\
-        \ ]; then\n  pip install -r requirements-dev.txt\nelse\n  echo \"::notice::No\
-        \ dev extras found; falling back to the pinned linter versions in this workflow\"\
-        \n  pip install 'ruff==0.14.4' 'mypy==1.18.2'\nfi\n"
+      if: needs.detect.outputs.python_pm != 'uv'
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        # Match [project.optional-dependencies] ONLY. The previous regex also
+        # matched a bare `dev =` line, which a PEP 735 [dependency-groups] table
+        # satisfies -- so a uv project took this branch and installed nothing.
+        if grep -q 'optional-dependencies' pyproject.toml 2>/dev/null; then
+          pip install -e '.[dev]'
+        elif [ -f requirements-dev.txt ]; then
+          pip install -r requirements-dev.txt
+        else
+          echo "::notice::No dev extras found; falling back to the pinned linter versions in this workflow"
+          pip install 'ruff==0.14.4' 'mypy==1.18.2'
+        fi
+
     - name: Verify the linters are actually present
       run: "set -euo pipefail\nmissing=0\nfor tool in ruff mypy; do\n  if python -c\
         \ \"import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$tool')\
