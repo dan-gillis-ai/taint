@@ -237,3 +237,4 @@ jobs:
         \ and was clean.\"\n  fi\n} >> \"$GITHUB_STEP_SUMMARY\"\nprintf 'report<<EOF\\\
         n%s\\nEOF\\n' \"$rows\" >> \"$GITHUB_OUTPUT\"\necho \"unconfigured=$unconfigured\"\
         \ >> \"$GITHUB_OUTPUT\"\n"
+# drift for the batching test
